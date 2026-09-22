@@ -1,0 +1,151 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+#include <SPI.h>
+#include <QRCode_ricmoo.h>
+
+// 1. Unga Wi-Fi Credentials
+const char* ssid     = "IOT";
+const char* password = "12345678";
+
+// 2. Unga Firebase Database URL (End-la /payment_status.json kandoppa irukkanum)
+const String FIREBASE_URL = "https://juicevending-5cf30-default-rtdb.firebaseio.com/payment_status.json";
+
+// ST7789 Pin Configurations
+#define TFT_CS    5
+#define TFT_DC    2
+#define TFT_RST   4
+#define RELAY_PIN 16
+
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+
+// Owner Details
+const String OWNER_UPI_ID = "buvaneshs2004-2@okhdfcbank";
+const String OWNER_NAME   = "Juice Machine";
+
+#define QR_VERSION 6
+#define QR_BUFFER_SIZE 211
+QRCode qrcode;
+uint8_t qrcodeData[QR_BUFFER_SIZE];
+
+// QR Code-a Screen-la Render Panna Function
+void displayQR(float amount) {
+  String payload = "upi://pay?pa=" + OWNER_UPI_ID + "&pn=" + OWNER_NAME + "&am=" + String(amount, 2) + "&cu=INR";
+  qrcode_initText(&qrcode, qrcodeData, QR_VERSION, ECC_LOW, payload.c_str());
+
+  tft.fillScreen(ST77XX_WHITE);
+  tft.setTextColor(ST77XX_BLACK, ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(65, 5);
+  tft.print("SCAN TO PAY");
+
+  int scale = 4;
+  int qrSizePx = qrcode.size * scale;
+  int startX = (320 - qrSizePx) / 2;
+  int startY = 30;
+
+  for (uint8_t y = 0; y < qrcode.size; y++) {
+    for (uint8_t x = 0; x < qrcode.size; x++) {
+      uint16_t color = qrcode_getModule(&qrcode, x, y) ? ST77XX_BLACK : ST77XX_WHITE;
+      tft.fillRect(startX + (x * scale), startY + (y * scale), scale, scale, color);
+    }
+  }
+
+  int textY = startY + qrSizePx + 10;
+  tft.setTextColor(ST77XX_BLUE, ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.setCursor(startX, textY);
+  tft.print("Amt: Rs. ");
+  tft.print(amount, 2);
+}
+
+// Firebase Status-a "PENDING"-ku Reset Panna Function
+void resetFirebaseStatus() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(FIREBASE_URL);
+    http.addHeader("Content-Type", "application/json");
+    http.PUT("\"PENDING\"");
+    http.end();
+  }
+}
+
+// Firebase-la Status "PAID"-a aiyruchani Check Panna Function
+String checkPaymentStatus() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(FIREBASE_URL);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      String payload = http.getString();
+      http.end();
+      payload.replace("\"", ""); // Remove extra quotes
+      return payload;
+    }
+    http.end();
+  }
+  return "ERROR";
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW); // Relay LED OFF
+
+  tft.init(240, 320);
+  tft.setRotation(1); // Landscape
+  tft.fillScreen(ST77XX_BLACK);
+
+  // WiFi Connect
+  WiFi.begin(ssid, password);
+  tft.setCursor(10, 100);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(2);
+  tft.print("Connecting WiFi...");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi Connected!");
+  
+  // Initial Reset & QR Display
+  resetFirebaseStatus();
+  displayQR(1.00); // Testing-kkaaga Rs. 1.00 QR Display Pannoom
+}
+
+void loop() {
+  String status = checkPaymentStatus();
+  Serial.println("Current Firebase Status: " + status);
+
+  if (status == "PAID") {
+    Serial.println("Payment Success Detected!");
+    
+    // Display Success Message on Screen
+    tft.fillScreen(ST77XX_GREEN);
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(20, 90);
+    tft.print("PAYMENT RECEIVED!");
+    tft.setCursor(20, 130);
+    tft.print("Dispensing Juice...");
+
+    // Relay Indicator (Built-in LED / Relay Signal Pin HIGH)
+    digitalWrite(RELAY_PIN, HIGH);
+    delay(5000); // 5 Seconds Juice Dispense Simulation
+    digitalWrite(RELAY_PIN, LOW);
+
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setCursor(60, 100);
+    tft.print("THANK YOU!");
+    delay(3000);
+
+    // Next Customer-kaaga Status Reset Panni QR Kaattuvom
+    resetFirebaseStatus();
+    displayQR(1.00); 
+  }
+
+  delay(2000); // 2 Seconds-ku orumurai Firebase Check Pannum
+}
